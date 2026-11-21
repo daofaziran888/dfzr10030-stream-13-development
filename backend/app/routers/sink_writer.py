@@ -90,3 +90,4 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+

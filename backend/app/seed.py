@@ -653,3 +653,38 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
   '再平衡触发': '分组分区样例3',
   '左右迁移': '分组分区样例3'}]
 }
+
+
+# ---------------------------------------------------------------------------
+# 质量审核放行批次：批次清单与检查项/报告项都来自 fixtures 的同一份基线，
+# 内存仓库只负责加状态字段，避免两处各写一遍阈值。
+# ---------------------------------------------------------------------------
+from app.fixtures import RELEASE_BATCH_SPECS  # noqa: E402
+
+
+def _release_seed_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, spec in enumerate(RELEASE_BATCH_SPECS, start=1):
+        rows.append({
+            "id": index,
+            "status": "待检查",
+            "pending": True,
+            "abnormal": False,
+            "批次编号": spec["批次编号"],
+            "指标批次": spec["指标批次"],
+            "说明": spec["说明"],
+            "检查项": [dict(item) for item in spec["检查项"]],
+            "报告项": [dict(item) for item in spec["报告项"]],
+            "当前检查": None,
+            "检查历史": [],
+            "放行依据": None,
+            "放行结论": None,
+            "样本修正记录": [],
+            "写入结果": [],
+            "写入历史": [],
+            "落盘状态": "未落盘",
+        })
+    return rows
+
+
+SEED_ROWS["quality_release"] = _release_seed_rows()

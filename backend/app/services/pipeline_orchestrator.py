@@ -14,6 +14,7 @@ from app.fixtures import (
     RULE_TRIGGERS, METRIC_DEFS, QUALITY_SAMPLES,
     PARTITION_STATS, EVENT_ROUTES,
 )
+from app.services.quality_release import service as release_service
 from app.store import store
 
 
@@ -164,7 +165,13 @@ def run_quality_scan() -> dict:
         if ab:
             mod_issues.append({"module": mod, "abnormal": ab})
 
-    result = {"quality_score": max(0, score), "anomalies": anomalies, "module_issues": mod_issues}
+    result = {
+        "quality_score": max(0, score),
+        "anomalies": anomalies,
+        "module_issues": mod_issues,
+        # 扫描结果要能回答“准备落盘的指标批次能不能发布”。
+        "release_batches": release_service.publish_summary(),
+    }
     _wr("quality_scan", {"source": ["data_quality"], "target": "_global", "payload": result})
     return result
 

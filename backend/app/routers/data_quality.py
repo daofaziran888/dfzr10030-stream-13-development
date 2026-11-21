@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services.data_quality import DataQualityService
+from app.services.quality_release import service as release_service
 
 router = APIRouter(prefix="/api/data_quality", tags=["流式质检"])
 
@@ -63,6 +64,21 @@ def export_entries(
     return StreamingResponse(
         iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="data_quality.csv"'})
+
+
+@router.get("/publish-view", response_model=dict)
+def publish_view() -> dict:
+    """扫描口径的发布视图：准备落盘的指标批次当前能不能发布、缺哪一段。
+
+    必须声明在 /{entry_id} 之前，避免静态路径被当成规则 id。
+    """
+    batches = release_service.publish_summary()
+    return {
+        "ok": True,
+        "items": batches,
+        "total": len(batches),
+        "releasable": sum(1 for item in batches if item["可发布"]),
+    }
 
 
 @router.get("/{entry_id}", response_model=dict)

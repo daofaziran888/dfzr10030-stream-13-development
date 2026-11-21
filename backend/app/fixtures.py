@@ -104,3 +104,69 @@ FIXTURE_DATASETS: dict[str, list[dict]] = {
     "_partition_stats": PARTITION_STATS,
     "_event_routes": EVENT_ROUTES,
 }
+
+# ---------------------------------------------------------------------------
+# 9. 质量审核放行批次（data_quality -> quality_release -> sink_writer）
+#
+# 每个放行批次把「监控对象 + 检查阈值」与「准备落盘的指标批次」绑定在一起。
+# 检查项直接复用第 6 节的质检样本口径，只在样本值上做三组区分：
+# 全部通过、单对象超阈值（准时出数与同批口径冲突）、缺少样本。
+# ---------------------------------------------------------------------------
+def _check_item(rule_id: str, sample: float | None) -> dict:
+    base = next(item for item in QUALITY_SAMPLES if item["规则编号"] == rule_id)
+    return {
+        "监控对象": base["监控对象"],
+        "检查项": base["检查项"],
+        "阈值上限": base["阈值上限"],
+        "阈值下限": base["阈值下限"],
+        "样本值": sample,
+    }
+
+
+RELEASE_BATCH_SPECS: list[dict] = [
+    {
+        "批次编号": "REL-20261121-01",
+        "指标批次": "MB-ORDER-20261121",
+        "说明": "订单主题指标批次，三个监控对象均已有同批样本。",
+        "检查项": [
+            _check_item("QUAL-LATENCY", 320.5),
+            _check_item("QUAL-THROUGHPUT", 12500.0),
+            _check_item("QUAL-COMPLETENESS", 0.9995),
+        ],
+        "报告项": [
+            {"槽位编号": "SINK-0001", "指标编号": "METR-ORDER-COUNT", "指标名称": "订单量", "指标值": 10, "监控对象": "stream_transform"},
+            {"槽位编号": "SINK-0002", "指标编号": "METR-GMV", "指标名称": "交易总额", "指标值": 1827.7, "监控对象": "cdc_task"},
+            {"槽位编号": "SINK-0003", "指标编号": "METR-AVG-ORDER", "指标名称": "平均订单金额", "指标值": 182.77, "监控对象": "sink_writer"},
+        ],
+    },
+    {
+        "批次编号": "REL-20261121-02",
+        "指标批次": "MB-GMV-20261121",
+        "说明": "交易主题指标批次，stream_transform 的处理延迟超过上限，其余对象通过。",
+        "检查项": [
+            _check_item("QUAL-LATENCY", 8200.0),
+            _check_item("QUAL-THROUGHPUT", 12500.0),
+            _check_item("QUAL-COMPLETENESS", 0.9995),
+        ],
+        "报告项": [
+            {"槽位编号": "SINK-0001", "指标编号": "METR-ORDER-COUNT", "指标名称": "订单量", "指标值": 10, "监控对象": "stream_transform"},
+            {"槽位编号": "SINK-0002", "指标编号": "METR-GMV", "指标名称": "交易总额", "指标值": 1827.7, "监控对象": "cdc_task"},
+            {"槽位编号": "SINK-0003", "指标编号": "METR-AVG-ORDER", "指标名称": "平均订单金额", "指标值": 182.77, "监控对象": "sink_writer"},
+        ],
+    },
+    {
+        "批次编号": "REL-20261121-03",
+        "指标批次": "MB-USER-20261121",
+        "说明": "用户主题指标批次，dedup_mgr 的重复率缺少样本，不能判断是否合格。",
+        "检查项": [
+            _check_item("QUAL-LATENCY", 320.5),
+            _check_item("QUAL-THROUGHPUT", 12500.0),
+            _check_item("QUAL-DUPLICATE", None),
+        ],
+        "报告项": [
+            {"槽位编号": "SINK-0001", "指标编号": "METR-ORDER-COUNT", "指标名称": "订单量", "指标值": 10, "监控对象": "stream_transform"},
+            {"槽位编号": "SINK-0002", "指标编号": "METR-GMV", "指标名称": "交易总额", "指标值": 1827.7, "监控对象": "cdc_task"},
+            {"槽位编号": "SINK-0003", "指标编号": "METR-USER-DISTINCT", "指标名称": "独立用户数", "指标值": 6, "监控对象": "dedup_mgr"},
+        ],
+    },
+]

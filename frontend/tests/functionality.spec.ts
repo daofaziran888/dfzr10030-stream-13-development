@@ -617,3 +617,129 @@ test('概览汇总', async ({ page }) => {
   await expect(page.locator('.stat-value').nth(1)).toBeVisible()
   // 验证概览页加载正常即可，不硬编码精确计数（取决于各模块 E2E 登记成功数）
 })
+
+test('质量审核放行：三组样本的槽位入账解释与重跑补齐', async ({ page }) => {
+  test.setTimeout(300_000)
+  const browserErrors: string[] = []
+  page.on('pageerror', e => browserErrors.push(e.message))
+  page.on('response', r => { if (r.url().includes('/api/') && r.status() >= 400) browserErrors.push(`${r.status()} ${r.url()}`) })
+
+  // 落盘依赖输出槽位实际状态：先只放开 SINK-0002，用来验证“部分入账”。
+  const slotActions = async (slots: number[], action: string) => {
+    for (const slot of slots) {
+      await page.request.post(`/api/sink_writer/${slot}/actions`, { data: { action } })
+    }
+  }
+  await slotActions([1, 2, 3], '暂停写入')
+  await slotActions([2], '启动写入')
+
+  await page.goto('/quality_release')
+  // 三个基线批次就是验收对象；登记动作放在最后，不影响前面的计数断言。
+  await expect(page.locator('tbody tr[data-testid^="row-"]')).toHaveCount(3)
+
+  const row = (id: number) => page.getByTestId(`row-${id}`)
+  const checkVerdict = (monitor: string) => page.getByTestId(`check-${monitor}`)
+  const reportStatus = (slot: string) => page.getByTestId(`report-${slot}`)
+
+  // --- 通过组：先部分入账，补齐槽位后重跑只写未入账范围 ---
+  await row(1).getByTestId('action-1-开始检查').click()
+  await expect(row(1)).toHaveAttribute('data-status', '检查中')
+  await row(1).getByTestId('action-1-检查一项').click()
+  await expect(checkVerdict('stream_transform')).toHaveAttribute('data-verdict', '通过')
+  await expect(checkVerdict('cdc_task')).toHaveAttribute('data-verdict', '未检查')
+  await expect(page.getByTestId('release-gap')).toContainText('第 1 轮只完成 1/3')
+  await row(1).getByTestId('action-1-完成检查').click()
+  await expect(row(1)).toHaveAttribute('data-status', '已放行')
+  await expect(checkVerdict('sink_writer')).toHaveAttribute('data-verdict', '通过')
+
+  await page.getByTestId('write-batch').click()
+  await expect(reportStatus('SINK-0002')).toHaveAttribute('data-write-status', '已入账')
+  await expect(reportStatus('SINK-0001')).toHaveAttribute('data-write-status', '未入账')
+  await expect(row(1)).toContainText('1 / 2')
+  await expect(reportStatus('SINK-0001')).toContainText('需要先启动写入')
+
+  await slotActions([1, 3], '启动写入')
+  await page.getByTestId('write-batch').click()
+  for (const slot of ['SINK-0001', 'SINK-0002', 'SINK-0003']) {
+    await expect(reportStatus(slot)).toHaveAttribute('data-write-status', '已入账')
+  }
+  await expect(page.getByTestId('release-detail')).toContainText('3/3 个报告项已入账')
+
+  // --- 超阈值组：一个对象超阈值即阻断同批，已通过对象也不得入账 ---
+  await row(2).getByTestId('action-2-开始检查').click()
+  await row(2).getByTestId('action-2-完成检查').click()
+  await expect(row(2)).toHaveAttribute('data-status', '拒绝放行')
+  await expect(checkVerdict('stream_transform')).toHaveAttribute('data-verdict', '超阈值')
+  await expect(checkVerdict('cdc_task')).toHaveAttribute('data-verdict', '通过')
+  await expect(reportStatus('SINK-0002')).toHaveAttribute('data-write-status', '待写入')
+  await expect(reportStatus('SINK-0002')).toContainText('同批仍有对象超阈值')
+  await expect(page.locator('.release-summary')).toContainText('准时出数')
+  await page.getByTestId('write-batch').click()
+  await expect(page.locator('.error-text')).toContainText('不能落盘')
+
+  // --- 缺样本组：缺测与超阈值分开表达 ---
+  await row(3).getByTestId('action-3-开始检查').click()
+  await row(3).getByTestId('action-3-完成检查').click()
+  await expect(row(3)).toHaveAttribute('data-status', '缺少样本')
+  await expect(checkVerdict('dedup_mgr')).toHaveAttribute('data-verdict', '缺少样本')
+  await expect(page.getByTestId('release-gap')).toContainText('dedup_mgr')
+
+  // --- 中断后重试：不得借用上一轮合格结论 ---
+  await row(2).getByTestId('action-2-重试检查').click()
+  await expect(checkVerdict('stream_transform')).toHaveAttribute('data-verdict', '未检查')
+  await row(2).getByTestId('action-2-检查一项').click()
+  await row(2).getByTestId('action-2-中断检查').click()
+  await expect(row(2)).toHaveAttribute('data-status', '检查中断')
+  await expect(page.getByTestId('release-gap')).toContainText('缺少 cdc_task、sink_writer')
+
+  // 修正数据后补齐未通过范围，再落盘；修正会让旧轮次结论整体失效。
+  await page.getByTestId('open-samples').click()
+  await expect(page.getByTestId('sample-modal')).toBeVisible()
+  await page.getByTestId('sample-stream_transform').fill('1200')
+  await page.getByTestId('submit-samples').click()
+  await expect(page.getByTestId('sample-modal')).toHaveCount(0)
+  await expect(row(2)).toHaveAttribute('data-status', '待检查')
+  await expect(checkVerdict('stream_transform')).toHaveAttribute('data-verdict', '未检查')
+
+  await row(2).getByTestId('action-2-开始检查').click()
+  await row(2).getByTestId('action-2-完成检查').click()
+  await expect(row(2)).toHaveAttribute('data-status', '已放行')
+  await page.getByTestId('write-batch').click()
+  for (const slot of ['SINK-0001', 'SINK-0002', 'SINK-0003']) {
+    await expect(reportStatus(slot)).toHaveAttribute('data-write-status', '已入账')
+  }
+
+  await page.getByTestId('reset').click()
+  await expect(page.locator('tbody tr[data-testid^="row-"]')).toHaveCount(3)
+
+  // --- 登记新的放行批次：报告项必须绑定到本批检查项 ---
+  const newCode = `REL-E2E-${Date.now()}`
+  await page.getByTestId('open-create').click()
+  await expect(page.getByTestId('create-modal')).toBeVisible()
+  await page.getByTestId('create-批次编号').fill(newCode)
+  await page.getByTestId('create-指标批次').fill('MB-E2E')
+  await page.getByTestId('create-check-monitor-0').fill('stream_transform')
+  await page.getByTestId('create-check-name-0').fill('处理延迟')
+  await page.getByTestId('create-check-high-0').fill('5000')
+  await page.getByTestId('create-check-low-0').fill('0')
+  await page.getByTestId('create-check-sample-0').fill('300')
+  await page.getByTestId('create-report-slot-0').fill('SINK-0001')
+  await page.getByTestId('create-report-metric-0').fill('METR-E2E')
+  await page.getByTestId('create-report-monitor-0').fill('stream_transform')
+  await page.getByTestId('submit-create').click()
+  await expect(page.getByTestId('create-modal')).toHaveCount(0)
+  await expect(
+    page.locator('tbody tr[data-testid^="row-"]').filter({ hasText: newCode }),
+  ).toHaveCount(1)
+  await expect(page.getByTestId('release-detail')).toContainText(newCode)
+
+  // --- 质检扫描页也能看到同一口径的发布视图 ---
+  await page.goto('/data_quality')
+  await expect(page.getByTestId('publish-view')).toBeVisible()
+  await expect(page.getByTestId('publish-row-REL-20261121-01')).toHaveAttribute('data-releasable', 'true')
+  await expect(page.getByTestId('publish-row-REL-20261121-02')).toHaveAttribute('data-releasable', 'true')
+  await expect(page.getByTestId('publish-row-REL-20261121-03')).toHaveAttribute('data-releasable', 'false')
+  await expect(page.getByTestId('publish-row-REL-20261121-03')).toContainText('缺测')
+
+  expect(browserErrors).toEqual([])
+})

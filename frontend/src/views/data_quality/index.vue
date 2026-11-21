@@ -72,6 +72,46 @@
       </form>
     </div>
 
+
+    <section class="publish-view" data-testid="publish-view">
+      <header class="publish-head">
+        <h3>指标批次发布视图</h3>
+        <span class="page-desc">扫描口径：准备落盘的指标批次能不能发布，取决于同批检查是否已经完成并全部通过。</span>
+      </header>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>批次编号</th>
+            <th>指标批次</th>
+            <th>放行状态</th>
+            <th>检查进度</th>
+            <th>可发布</th>
+            <th>阻断原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="item in publishItems"
+            :key="String(item['批次编号'])"
+            :data-testid="`publish-row-${item['批次编号']}`"
+            :data-releasable="String(item['可发布'])"
+          >
+            <td>{{ item['批次编号'] }}</td>
+            <td>{{ item['指标批次'] }}</td>
+            <td>{{ item['状态'] }}</td>
+            <td>{{ item['检查进度'] }}</td>
+            <td>{{ item['可发布'] ? '可发布' : '不可发布' }}</td>
+            <td class="gap-cell">
+              {{ item['可发布'] ? '—' : blockedText(item) }}
+            </td>
+          </tr>
+          <tr v-if="!publishItems.length">
+            <td colspan="6" class="empty-state">暂无待发布的指标批次</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条流式质检记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -93,6 +133,7 @@ const statuses = ["未启用", "运行中", "已告警", "已关闭"]
 const metricNames = ["规则总数", "运行中规则", "已告警规则"]
 
 const rows = ref<Row[]>([])
+const publishItems = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
@@ -179,10 +220,37 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    await reloadPublishView()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '流式质检列表读取失败'
   }
 }
 
+function blockedText(item: Row): string {
+  const reasons = item['阻断原因']
+  if (Array.isArray(reasons) && reasons.length) return reasons.join('；')
+  return String(item['结论'] ?? '缺少放行依据')
+}
+
+async function reloadPublishView() {
+  try {
+    const response = await request(`${ENDPOINT}/publish-view`)
+    if (!response.ok) throw new Error('发布视图读取失败')
+    const payload = await response.json()
+    publishItems.value = payload.items ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '发布视图读取失败'
+  }
+}
+
 onMounted(reload)
 </script>
+
+<style scoped>
+.publish-view { margin-top: 20px; }
+.publish-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.publish-head h3 { margin: 0; font-size: 15px; }
+.publish-view tr[data-releasable='true'] td:nth-child(5) { color: #166534; font-weight: 600; }
+.publish-view tr[data-releasable='false'] td:nth-child(5) { color: #b45309; }
+.gap-cell { max-width: 360px; font-size: 12px; color: #475569; }
+</style>

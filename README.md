@@ -60,6 +60,7 @@ npm run dev
 | 背压控制 | `backpressure` | 背压策略 | 策略编号、关联算子、队列上限 |
 | 断流恢复 | `checkpoint` | 检查点 | 检查点编号、关联流水线、位点时间 |
 | 流式质检 | `data_quality` | 质检规则 | 规则编号、关联流、检查项 |
+| 质量审核放行 | `quality_release` | 放行批次 | 批次编号、指标批次、检查项、报告项 |
 | Schema演进 | `schema_evolve` | 结构变更 | 变更编号、关联流、变更类型 |
 | 管道编排 | `pipeline_orch` | 管道DAG | 管道编号、管道名称、节点列表 |
 | 去重管理 | `dedup_mgr` | 去重策略 | 策略编号、关联流、去重键 |
@@ -74,6 +75,29 @@ npm run dev
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 质量审核放行
+
+`quality_release` 把「监控对象 + 检查阈值」和「准备落盘的指标批次」绑定成一个放行批次：
+
+- 只有**本批次本轮检查全部完成且全部通过**才写入 `放行依据`；中断、超阈值、缺样本都不会产生依据。
+- 重试或修正样本会归档上一轮结论并清空放行依据，新轮次从 0/N 重新检查，不借用历史合格结果。
+- 结论分三档：`通过`、`超阈值`、`缺少样本`，缺测不会被当成超阈值。
+- 同一批里部分对象通过、部分超阈值时，已通过对象也保持待写入，并在视图里说明
+  「准时出数与同批口径冲突」。
+- 数据落盘只消费 `status == 已放行` 且放行依据轮次与当前检查轮次一致的批次，
+  逐个报告项按目标槽位的实际状态决定是否入账，结果回写 `写入结果`；
+  补齐槽位后重跑只追加仍未入账的项，已入账项保留首次写入轮次。
+
+接口：
+
+- `GET /api/quality_release`：放行批次列表（含进度、缺失环节、入账统计）
+- `POST /api/quality_release`：登记放行批次（校验报告项的监控对象必须在本批检查项里）
+- `GET /api/quality_release/{id}`：检查视图、放行视图、报告项写入结果
+- `POST /api/quality_release/{id}/actions`：开始检查、检查一项、完成检查、中断检查、重试检查
+- `POST /api/quality_release/{id}/samples`：修正样本（旧结论与放行依据立即失效）
+- `GET /api/sink_writer/releases`、`POST /api/sink_writer/releases/{id}/write`：按批次落盘
+- `GET /api/data_quality/publish-view`：扫描口径的“能不能发布”摘要
 
 领域：数据工程
 子方向：数仓与数据湖
